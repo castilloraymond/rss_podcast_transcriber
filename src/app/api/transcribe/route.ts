@@ -1,100 +1,128 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@deepgram/sdk';
 
-// Initialize the Deepgram client
 const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
-if (!DEEPGRAM_API_KEY) {
-  console.error('DEEPGRAM_API_KEY is not configured');
+
+interface DeepgramWord {
+  word: string;
+  start: number;
+  end: number;
+  confidence: number;
 }
-const deepgram = createClient(DEEPGRAM_API_KEY || '');
+
+if (!DEEPGRAM_API_KEY) {
+  throw new Error('DEEPGRAM_API_KEY is required');
+}
 
 export async function POST(request: Request) {
+  // Add CORS headers
+  const headers = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  };
+
+  // Handle preflight requests
+  if (request.method === 'OPTIONS') {
+    return new NextResponse(null, { headers });
+  }
+
   try {
     console.log('Received transcription request');
     const { audioUrl } = await request.json();
-    console.log('Audio URL:', audioUrl);
+    console.log('Original Audio URL:', audioUrl);
 
     if (!audioUrl) {
       console.error('No audio URL provided');
       return NextResponse.json(
-        { error: 'Audio URL is required' },
-        { status: 400 }
+        { error: 'No audio URL provided' },
+        { status: 400, headers }
       );
     }
 
-    if (!DEEPGRAM_API_KEY) {
-      console.error('Deepgram API key not configured');
+    // Validate the audio URL
+    try {
+      new URL(audioUrl);
+    } catch (error) {
+      console.error('Invalid audio URL format:', audioUrl);
       return NextResponse.json(
-        { error: 'Transcription service not configured' },
-        { status: 500 }
+        { error: 'Invalid audio URL format' },
+        { status: 400, headers }
       );
     }
-
-    // Use a proxy for CORS if needed
-    const proxyUrl = audioUrl.startsWith('http') 
-      ? audioUrl 
-      : `https://api.allorigins.win/raw?url=${encodeURIComponent(audioUrl)}`;
-    console.log('Using proxy URL:', proxyUrl);
 
     try {
-      // First check if the audio URL is accessible
-      console.log('Checking audio file accessibility...');
-      const audioResponse = await fetch(proxyUrl);
-      if (!audioResponse.ok) {
-        console.error('Audio file not accessible:', audioResponse.status);
-        throw new Error('Audio file not accessible');
+      console.log('Making Deepgram API request...');
+
+      // Make the transcription request using fetch directly
+      const response = await fetch('https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&punctuate=true&utterances=true&word_timestamps=true', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Token ${DEEPGRAM_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          url: audioUrl
+        })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Deepgram API error response:', errorText);
+        throw new Error(`Deepgram API error: ${response.statusText} - ${errorText}`);
       }
-      console.log('Audio file is accessible');
+
+      const data = await response.json();
+      console.log('Received response from Deepgram');
+
+      if (!data.results || !data.results.channels || !data.results.channels[0]?.alternatives) {
+        console.error('Invalid response format from Deepgram:', data);
+        throw new Error('Invalid transcription response format');
+      }
+
+      const transcript = data.results.channels[0].alternatives[0].transcript;
+      const words = data.results.channels[0].alternatives[0].words || [];
+
+      if (!transcript) {
+        throw new Error('No transcript found in response');
+      }
+
+      console.log('Transcription completed successfully');
+      console.log('Transcript length:', transcript.length);
+      console.log('Number of words:', words.length);
+
+      return NextResponse.json({ 
+        transcript,
+        words: words.map((word: DeepgramWord) => ({
+          word: word.word,
+          start: word.start,
+          end: word.end,
+          confidence: word.confidence
+        }))
+      }, { headers });
+
     } catch (error) {
-      console.error('Error accessing audio file:', error);
-      return NextResponse.json(
-        { error: 'Could not access audio file. Please check the URL.' },
-        { status: 400 }
-      );
-    }
-
-    // Transcribe the audio using Deepgram
-    console.log('Starting Deepgram transcription...');
-    const { result, error } = await deepgram.listen.prerecorded.transcribeUrl(
-      { url: proxyUrl },
-      {
-        smart_format: true,
-        punctuate: true,
-        paragraphs: true,
-        utterances: true,
-        diarize: true,
+      console.error('Error during transcription:', error);
+      if (error instanceof Error) {
+        console.error('Error name:', error.name);
+        console.error('Error message:', error.message);
+        console.error('Error stack:', error.stack);
       }
-    );
-
-    if (error || !result) {
-      console.error('Deepgram transcription error:', error);
+      
+      // Return a more specific error message
+      const errorMessage = error instanceof Error ? error.message : 'Unknown transcription error';
       return NextResponse.json(
-        { error: 'Failed to transcribe audio', details: error?.message },
-        { status: 500 }
+        { error: `Transcription failed: ${errorMessage}` },
+        { status: 500, headers }
       );
     }
-
-    console.log('Transcription completed successfully');
-    // Extract and format the transcript
-    const transcript = result.results?.channels[0]?.alternatives[0]?.transcript || '';
-    
-    // Format the transcript with proper line breaks and speaker labels if available
-    const formattedTranscript = transcript
-      .split('\n')
-      .map(line => line.trim())
-      .filter(line => line.length > 0)
-      .join('\n\n');
-
-    return NextResponse.json({ 
-      transcript: formattedTranscript,
-      success: true
-    });
   } catch (error) {
-    console.error('Error transcribing audio:', error);
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+    console.error('Error processing request:', error);
+    if (error instanceof Error) {
+      console.error('Error stack:', error.stack);
+    }
     return NextResponse.json(
-      { error: 'Failed to transcribe audio', details: errorMessage },
-      { status: 500 }
+      { error: 'Internal server error' },
+      { status: 500, headers }
     );
   }
 } 
