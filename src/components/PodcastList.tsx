@@ -1,62 +1,88 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { type FeedItem } from '@/lib/utils/feedParser';
+import { motion } from 'framer-motion';
+import HTMLReactParser from 'html-react-parser';
+import DOMPurify from 'isomorphic-dompurify';
+import TranscriptViewer from './TranscriptViewer';
+import { usePodcast } from '@/lib/contexts/PodcastContext';
 
 interface PodcastListProps {
   episodes: FeedItem[];
-  onTranscriptGenerated: (episodeId: string, transcript: string) => void;
+  onTranscriptGenerated: (episodeId: string, transcript: string, words: any[]) => void;
 }
 
 export default function PodcastList({ episodes, onTranscriptGenerated }: PodcastListProps) {
   const [selectedEpisode, setSelectedEpisode] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'description' | 'transcript'>('description');
-  const [isGeneratingTranscript, setIsGeneratingTranscript] = useState(false);
+  const [transcribingEpisodes, setTranscribingEpisodes] = useState<Set<string>>(new Set());
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const { setCurrentEpisode, setTranscript, setWords } = usePodcast();
 
   const selectedEpisodeData = episodes.find(ep => ep.id === selectedEpisode);
 
-  const handleGenerateTranscript = async () => {
-    if (!selectedEpisodeData?.audioUrl) {
-      console.error('No audio URL available for transcript generation');
+  // Update the podcast context when the selected episode changes
+  const handleEpisodeSelect = (episodeId: string) => {
+    setSelectedEpisode(episodeId);
+    const episode = episodes.find(ep => ep.id === episodeId);
+    if (episode) {
+      setCurrentEpisode(episode);
+      setTranscript(episode.transcript || '');
+      setWords(episode.words || []);
+    }
+  };
+
+  const handleGenerateTranscript = async (episodeId: string, audioUrl: string) => {
+    if (!audioUrl) {
       setTranscriptError('No audio URL available');
       return;
     }
     
-    console.log('Starting transcript generation for:', selectedEpisodeData.audioUrl);
-    setIsGeneratingTranscript(true);
     setTranscriptError(null);
-
+    setTranscribingEpisodes(prev => new Set(prev).add(episodeId));
+    
     try {
       const response = await fetch('/api/transcribe', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ audioUrl: selectedEpisodeData.audioUrl }),
+        body: JSON.stringify({ audioUrl }),
       });
       
-      console.log('Transcript API response status:', response.status);
-      const data = await response.json();
-      console.log('Transcript API response:', data);
-
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to generate transcript');
+        throw new Error(`Error: ${response.status}`);
       }
       
+      const data = await response.json();
+      
       if (data.transcript) {
-        console.log('Transcript generated successfully');
-        onTranscriptGenerated(selectedEpisodeData.id, data.transcript);
+        onTranscriptGenerated(episodeId, data.transcript, data.words || []);
+        
+        // Update the podcast context with the new transcript
+        const episode = episodes.find(ep => ep.id === episodeId);
+        if (episode) {
+          setCurrentEpisode(episode);
+          setTranscript(data.transcript);
+          setWords(data.words || []);
+        }
+        
         setActiveTab('transcript');
       } else {
-        throw new Error('No transcript in response');
+        throw new Error('No transcript returned');
       }
     } catch (error) {
       console.error('Error generating transcript:', error);
-      setTranscriptError(error instanceof Error ? error.message : 'Failed to generate transcript');
+      setTranscriptError(`Failed to generate transcript: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
-      setIsGeneratingTranscript(false);
+      setTranscribingEpisodes(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(episodeId);
+        return newSet;
+      });
     }
   };
 
@@ -68,24 +94,28 @@ export default function PodcastList({ episodes, onTranscriptGenerated }: Podcast
           <h2 className="text-lg font-semibold mb-4">Episodes</h2>
           <div className="space-y-2">
             {episodes.map((episode) => (
-              <button
+              <div
                 key={episode.id}
-                className={`w-full text-left px-3 py-2 rounded-lg ${
+                className={`w-full rounded-lg ${
                   selectedEpisode === episode.id 
-                    ? 'bg-blue-900 hover:bg-blue-800' 
-                    : 'hover:bg-gray-700'
-                } cursor-pointer transition-colors text-sm`}
-                onClick={() => setSelectedEpisode(episode.id)}
+                    ? 'bg-blue-900' 
+                    : 'bg-gray-800'
+                } p-3 space-y-2`}
               >
-                {episode.title}
-              </button>
+                <button
+                  className="w-full text-left text-sm hover:text-blue-300 transition-colors"
+                  onClick={() => handleEpisodeSelect(episode.id)}
+                >
+                  {episode.title}
+                </button>
+                {episode.transcript && (
+                  <div className="text-xs text-green-400">
+                    ✓ Transcribed
+                  </div>
+                )}
+              </div>
             ))}
           </div>
-          {episodes.length === 0 && (
-            <p className="text-gray-500 text-sm text-center">
-              No episodes available
-            </p>
-          )}
         </div>
       </div>
 
@@ -106,6 +136,7 @@ export default function PodcastList({ episodes, onTranscriptGenerated }: Podcast
               {selectedEpisodeData.audioUrl && (
                 <div className="mb-4">
                   <audio 
+                    ref={audioRef}
                     controls 
                     className="w-full"
                     src={selectedEpisodeData.audioUrl}
@@ -137,44 +168,51 @@ export default function PodcastList({ episodes, onTranscriptGenerated }: Podcast
                 >
                   Transcript
                 </button>
-                {selectedEpisodeData.audioUrl && !selectedEpisodeData.transcript && !isGeneratingTranscript && (
-                  <button
-                    onClick={handleGenerateTranscript}
-                    className="ml-auto px-4 py-1 text-sm bg-blue-600 text-white rounded-full hover:bg-blue-700 transition-colors"
-                  >
-                    Generate Transcript
-                  </button>
-                )}
-                {isGeneratingTranscript && (
-                  <div className="ml-auto flex items-center gap-2 text-sm text-gray-400">
-                    <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent"></div>
-                    Generating transcript...
-                  </div>
-                )}
               </div>
             </div>
 
             {/* Content Area */}
             <div className="flex-1 overflow-auto p-6">
-              <div className="prose prose-invert max-w-none">
-                {activeTab === 'transcript' ? (
-                  selectedEpisodeData.transcript ? (
-                    <ReactMarkdown>
-                      {selectedEpisodeData.transcript}
-                    </ReactMarkdown>
-                  ) : (
-                    <div className="text-gray-400">
-                      {isGeneratingTranscript 
-                        ? 'Generating transcript...'
-                        : transcriptError || 'No transcript available. Click "Generate Transcript" to create one.'}
-                    </div>
-                  )
+              {activeTab === 'transcript' ? (
+                selectedEpisodeData.transcript ? (
+                  <TranscriptViewer
+                    transcript={selectedEpisodeData.transcript}
+                    words={selectedEpisodeData.words || []}
+                    audioElement={audioRef.current}
+                  />
                 ) : (
-                  <ReactMarkdown>
-                    {selectedEpisodeData.content || selectedEpisodeData.description || ''}
-                  </ReactMarkdown>
-                )}
-              </div>
+                  <div className="flex flex-col items-center justify-center space-y-4 py-12">
+                    {transcribingEpisodes.has(selectedEpisodeData.id) ? (
+                      <>
+                        <motion.div
+                          animate={{ rotate: 360 }}
+                          transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                          className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full"
+                        />
+                        <p className="text-gray-400">Generating transcript...</p>
+                      </>
+                    ) : (
+                      <>
+                        {selectedEpisodeData.audioUrl && (
+                          <button
+                            onClick={() => handleGenerateTranscript(selectedEpisodeData.id, selectedEpisodeData.audioUrl!)}
+                            className="px-4 py-2 bg-blue-600 text-white rounded-full hover:bg-blue-700 transition-colors flex items-center gap-2"
+                          >
+                            Generate Transcript
+                          </button>
+                        )}
+                        {transcriptError && (
+                          <p className="text-red-400 text-sm mt-2">{transcriptError}</p>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )
+              ) : (
+                <div className="prose prose-invert max-w-none">
+                  {HTMLReactParser(DOMPurify.sanitize(selectedEpisodeData.content || selectedEpisodeData.description || ''))}
+                </div>
+              )}
             </div>
           </div>
         ) : (

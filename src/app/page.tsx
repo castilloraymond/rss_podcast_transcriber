@@ -3,7 +3,8 @@
 import { useState } from 'react';
 import Sidebar from '@/components/Sidebar'
 import PodcastList from '@/components/PodcastList'
-import type { Feed, FeedItem } from '@/lib/utils/feedParser';
+import ChatButton from '@/components/ChatButton'
+import type { Feed, FeedItem, Word } from '@/lib/utils/feedParser';
 
 export default function Home() {
   const [episodes, setEpisodes] = useState<FeedItem[]>([]);
@@ -12,11 +13,11 @@ export default function Home() {
     setEpisodes(feed.items);
   };
 
-  const handleTranscriptGenerated = (episodeId: string, transcript: string) => {
+  const handleTranscriptGenerated = (episodeId: string, transcript: string, words: Word[]) => {
     setEpisodes(prevEpisodes => 
       prevEpisodes.map(episode => 
         episode.id === episodeId 
-          ? { ...episode, transcript } 
+          ? { ...episode, transcript, words } 
           : episode
       )
     );
@@ -29,6 +30,7 @@ export default function Home() {
         episodes={episodes} 
         onTranscriptGenerated={handleTranscriptGenerated}
       />
+      <ChatButton />
     </main>
   )
 }

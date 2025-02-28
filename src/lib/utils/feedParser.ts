@@ -1,5 +1,12 @@
 import Parser from 'rss-parser';
 
+export interface Word {
+  word: string;
+  start: number;
+  end: number;
+  confidence: number;
+}
+
 export interface FeedItem {
   id: string;
   title: string;
@@ -9,6 +16,7 @@ export interface FeedItem {
   link: string;
   audioUrl?: string;
   transcript?: string;
+  words?: Word[];
 }
 
 export interface Feed {
@@ -62,36 +70,7 @@ export async function parseFeed(url: string): Promise<Feed> {
     }
 
     const data = await response.json();
-    
-    // For each item, fetch its transcript if an audio URL exists
-    const itemsWithTranscripts = await Promise.all(
-      data.items.map(async (item: FeedItem) => {
-        if (item.audioUrl) {
-          try {
-            const transcriptResponse = await fetch('/api/transcribe', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({ audioUrl: item.audioUrl }),
-            });
-            
-            if (transcriptResponse.ok) {
-              const { transcript } = await transcriptResponse.json();
-              return { ...item, transcript };
-            }
-          } catch (error) {
-            console.error('Failed to fetch transcript:', error);
-          }
-        }
-        return item;
-      })
-    );
-
-    return {
-      ...data,
-      items: itemsWithTranscripts,
-    };
+    return data;
   } catch (error) {
     console.error('Error parsing feed:', error);
     throw error;
